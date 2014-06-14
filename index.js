@@ -1,10 +1,22 @@
 'use strict';
 
+/*
+
+TODO:
+* (much) better error handling
+* webhooks to know if a doc eventually failed (eg., after we got a valid session)
+* clean this up, I mean come on
+
+
+ */
+
+
 var levelup = require('levelup'),
     express = require('express'),
     bodyParser = require('body-parser'),
     EventEmitter = require('eemitter'),
     http = require('http'),
+    https = require('https'),
     validUrl = require('valid-url'),
     // https = require('https'),
     view = require('box-view').createClient(process.env.BOX_VIEW_API_TOKEN),
@@ -110,16 +122,29 @@ function createDBHandler(url, res) {
 
         if (val.session) {
             console.log('already have a session for url: ' + url);
-            res.json({
-                session: val.session
+
+            console.log('let us make sure it works...');
+            https.get('https://view-api.box.com/1/sessions/' + val.session + '/view', function (r) {
+                if (r.statusCode === 200) {
+                    res.json({
+                        session: val.session
+                    });
+                } else {
+                    db.del(url);
+                    res.json({
+                        retry: 1
+                    });
+                }
             });
+
         } else if (val.pending) {
             console.log('this url is still converting?: ' + url);
             console.log(val);
             if (Date.now() - (val.time || 0) > TEN_MINUTES) {
+                console.log('giving up on this one...');
                 db.del(url);
-                res.json({
-                    retry: 1
+                res.json(400, {
+                    error: 'failed to convert?'
                 });
                 return;
             }
