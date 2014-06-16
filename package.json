@@ -18,12 +18,11 @@
   "homepage": "https://github.com/lakenen/viewify-server",
   "devDependencies": {
     "box-view": "^0.1.0",
-    "express": "^4.4.1",
     "levelup": "^0.18.3",
     "leveldown": "^0.10.2",
-    "valid-url": "^1.0.9",
-    "body-parser": "^1.3.0",
     "eemitter": "0.0.1",
-    "http-https": "^1.0.0"
+    "http-https": "^1.0.0",
+    "restify": "^2.8.1",
+    "async": "^0.9.0"
   }
 }
