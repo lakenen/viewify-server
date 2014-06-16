@@ -51,11 +51,25 @@ var docDB = levelup(DOC_DB, {
 
 var ee = new EventEmitter();
 
-var connection = amqp.createConnection();
-var queue = connection.queue('conversions', function (q) {
-    q.subscribe(function (message, headers, deliveryInfo, messageObject) {
-        console.log('Got a message with routing key ' + deliveryInfo.routingKey);
-        messageObject.acknowledge();
+var connection = amqp.createConnection({
+    host: 'localhost'
+}, {defaultExchangeName: 'conversions'});
+
+connection.once('ready', function () {
+    console.log('connected to AMQP server...');
+    console.log('creating queue...');
+    connection.queue('url.job', function (q) {
+        console.log('queue created');
+        q.bind('conversions', '#');
+        q.subscribe({ack: true, prefetchCount: 1}, function (job) {
+            console.log('got a job: ', job);
+            uploadDoc(job.url, function (err) {
+                if (err) {
+                    console.log('error uploading doc', err);
+                }
+                q.shift();
+            });
+        });
     });
 });
 
@@ -85,7 +99,7 @@ function startServer() {
     }));
 
     server.get('/', function (req, res) {
-        connection.publish('url', {foo: 'blah'});
+        //createJob(req.params.url);
         res.json({
             hello: 'world'
         });
@@ -124,6 +138,10 @@ function startServer() {
     return server;
 }
 
+function createJob(url) {
+    connection.publish('url.job', { url: url });
+}
+
 function registerConversionError(id, callback) {
     docDB.get(id, function (err, doc) {
         if (err) {
@@ -148,7 +166,7 @@ function registerConversionError(id, callback) {
     });
 }
 
-function handleError(err, url, res) {
+function handleError(err, url) {
     console.log('ERROR', err);
     var metadata = {
         error: err
@@ -159,17 +177,17 @@ function handleError(err, url, res) {
             return;
         }
     });
-    res.json(400, metadata);
 }
 
-function createSession(url, doc, res) {
+function createSession(url, doc, done) {
     console.log('creating session: ' + url, doc);
     view.sessions.create(doc.id, defaultSessionParams, function (err, session) {
         var metadata;
         console.log('finished creating session: ' + url);
 
         if (err) {
-            handleError(ERR_SESSION, url, res);
+            handleError(ERR_SESSION, url);
+            done(err);
             return;
         }
 
@@ -184,18 +202,40 @@ function createSession(url, doc, res) {
         // we got a doc! let's update the db...
         db.put(url, metadata, function (err) {
             if (err) {
-                console.log(err);
+                done(err);
                 return;
             }
-        });
-
-        res.json({
-            session: metadata.session
+            done();
         });
     });
 }
 
-function uploadDoc(url, res) {
+function uploadDoc(url, done) {
+    console.log('uploading: ' + url);
+    view.documents.uploadURL(url, defaultUploadParams, function (err, response) {
+        console.log('finished uploading: ' + url);
+        if (err) {
+            var retryAfter = response.headers['retry-after'];
+            if (response.statusCode === 429) {
+                console.log('got throttled... retrying in ' + retryAfter + 's');
+                setTimeout(function () {
+                    uploadDoc(url, done);
+                }, retryAfter * 1000);
+            } else {
+                handleError(err, url);
+                done(err);
+            }
+            return;
+        }
+        docDB.put(response.id, {
+            doc: response,
+            url: url
+        });
+        createSession(url, response, done);
+    });
+}
+
+/*function uploadDoc(url, res) {
 
     console.log('uploading: ' + url);
     view.documents.uploadURL(url, defaultUploadParams, function (err, response) {
@@ -218,12 +258,21 @@ function uploadDoc(url, res) {
         });
         createSession(url, response, res);
     });
-}
+}*/
+/*
+function readResponse(response, callback) {
+    var body = '';
+    response.on('data', function (d) {
+        body += d.toString();
+    });
+    response.on('end', function () {
+        callback(body);
+    });
+    response.on('error', callback);
+}*/
 
-function testSession(id, callback) {
-    var options = URL.parse(view.sessionsURL + '/' + id + '/view');
-    options.method = 'HEAD';
-    var req = hh.request(options, function (r) {
+function verifySession(id, callback) {
+    var req = hh.get(view.sessionsURL + '/' + id + '/assets/info.json', function (r) {
         if (r.statusCode === 200) {
             callback(true);
         } else {
@@ -235,7 +284,7 @@ function testSession(id, callback) {
 
 function handleSession(id, url, res) {
     console.log('got a session ' +id +', make sure it works...');
-    testSession(id, function (valid) {
+    verifySession(id, function (valid) {
         if (valid) {
             console.log('session is valid for '+ url + '... go get it!');
             res.json({
@@ -253,6 +302,28 @@ function handleSession(id, url, res) {
 }
 
 function createDBHandler(url, res) {
+
+    var tid;
+    // we have this url (maybe requested by someone else?), but it's
+    // not done (or errored) yet... wait for a change in the db for this url
+    var handleResult = function (val) {
+        clearTimeout(tid);
+        // call this function again
+        handler(null, val);
+        ee.off(url, handleResult);
+    };
+
+    var startTimeout = function () {
+        ee.on(url, handleResult);
+        tid = setTimeout(function () {
+            // tell them to retry if it's taking too long...
+            res.json({
+                retry: 1
+            });
+            ee.off(url, handleResult);
+        }, MAX_REQUEST_DURATION);
+    };
+
     var handler = function (err, val) {
         if (err) {
             // url does not yet exist in the db, so let's create it!
@@ -265,7 +336,8 @@ function createDBHandler(url, res) {
                 }
             });
 
-            uploadDoc(url, res);
+            startTimeout();
+            createJob(url);
             return;
         }
         console.log('already have this url: ' + url);
@@ -275,29 +347,17 @@ function createDBHandler(url, res) {
             handleSession(val.session, url, res);
         } else if (val.pending) {
             console.log('this url is still converting?: ' + url);
+            startTimeout();
             if (Date.now() - (val.time || 0) > TEN_MINUTES) {
                 console.log('giving up on this one...');
-                handleError('the document failed to convert in a reasonable amount of time', url, res);
+                handleError('the document failed to convert in a reasonable amount of time', url);
                 return;
             }
-            // we have this url (maybe requested by someone else?), but it's
-            // not done (or errored) yet... wait for a change in the db for this url
-            var tmpfn = function (val) {
-                clearTimeout(tid);
-                handler(null, val);
-                ee.off(url, tmpfn);
-            };
-            var tid = setTimeout(function () {
-                // tell them to retry if it's taking too long...
-                res.json({
-                    retry: 1
-                });
-                ee.off(url, tmpfn);
-            }, MAX_REQUEST_DURATION);
-            ee.on(url, tmpfn);
         } else {
             console.log('this url had an error: ' + url);
-            handleError(val.error || 'unknown error...', url, res);
+            res.json(400, {
+                error: val.error || 'unknown error...'
+            });
         }
     };
     return handler;
