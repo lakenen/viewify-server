@@ -11,18 +11,15 @@ TODO:
  */
 
 
-var levelup = require('levelup'),
-    async = require('async'),
+var async = require('async'),
     restify = require('restify'),
-    amqp = require('amqp'),
     EventEmitter = require('eemitter'),
     hh = require('http-https'),
     URL = require('url'),
-    // https = require('https'),
+    redis = require('redis'),
+    queue = require('bull'),
+    db = redis.createClient(),
     view = require('box-view').createClient(process.env.BOX_VIEW_API_TOKEN);
-
-var DB = './db/urls-local';
-var DOC_DB = './db/docs-local';
 
 var MAX_REQUEST_DURATION = 100000; // ms
 var TEN_MINUTES = 600000; // ms
@@ -30,9 +27,8 @@ var TEN_MINUTES = 600000; // ms
 var ERR_CONVERSION = 'There was an error converting the document.';
 var ERR_SESSION = 'There was an error creating a viewing session. This probably means the document failed to convert.';
 
-
-view.documentsURL = 'http://localhost:8000/1/documents';
-view.sessionsURL = 'http://localhost:8000/1/sessions';
+view.documentsURL = process.env.BOX_VIEW_DOCUMENTS_URL;
+view.sessionsURL = process.env.BOX_VIEW_SESSIONS_URL;
 
 var defaultUploadParams = {
         'non_svg': false // because fuck IE 8
@@ -42,40 +38,54 @@ var defaultUploadParams = {
         duration: 525900000 // 1k years
     };
 
-var db = levelup(DB, {
-    valueEncoding: 'json'
-});
-var docDB = levelup(DOC_DB, {
-    valueEncoding: 'json'
-});
-
 var ee = new EventEmitter();
 
-var connection = amqp.createConnection({
-    host: 'localhost'
-}, {defaultExchangeName: 'conversions'});
+var urlQueue = queue('urls', 6379, '127.0.0.1');
 
-connection.once('ready', function () {
-    console.log('connected to AMQP server...');
-    console.log('creating queue...');
-    connection.queue('url.job', function (q) {
-        console.log('queue created');
-        q.bind('conversions', '#');
-        q.subscribe({ack: true, prefetchCount: 1}, function (job) {
-            console.log('got a job: ', job);
-            uploadDoc(job.url, function (err) {
-                if (err) {
-                    console.log('error uploading doc', err);
-                }
-                q.shift();
-            });
+function emitUpdate(url) {
+    get(url, function (err, val) {
+        if (!err) {
+            ee.emit(url, val);
+        }
+    });
+}
+urlQueue.process(function (job, done) {
+    console.log('got a job:', job.data);
+    var url = job.data.url;
+    uploadDoc(url, function (err, metadata) {
+        if (err) {
+            console.log('error uploading doc', err);
+        }
+        console.log('finished... session is available... sending update');
+        emitUpdate(url);
+        ee.one('webhook-' + metadata.doc, function (err) {
+            console.log('got a webhook; pulling next doc from the queue...');
+            job.remove();
+            done(err);
         });
+        setTimeout(function () {
+            done('took too long to convert');
+        }, 60000);
     });
 });
 
-db.on('put', function (k, v) {
-    ee.emit(k, v);
-});
+function set(k, v, cb) {
+    if (typeof v !== 'string') {
+        v = JSON.stringify(v);
+    }
+    db.set(k, v, cb);
+}
+
+function get(k, cb) {
+    db.get(k, function (err, v) {
+        if (!v) {
+            err = 'not found';
+        } else {
+            v = JSON.parse(v);
+        }
+        cb(err, v);
+    });
+}
 
 function startServer() {
     var server = restify.createServer({
@@ -114,22 +124,16 @@ function startServer() {
             });
             return;
         }
-        db.get(url, createDBHandler(url, res));
+        get(url, createDBHandler(url, res));
     });
 
     server.post('/hooks', function (req, res) {
         console.log('got a webhook notification...');
         var notifications = req.body;
-        var erroredDocIds = notifications.filter(function (n) {
-            return n.type === 'document.error';
-        }).map(function (n) {
-            return n.data.id;
-        });
-        if (erroredDocIds.length) {
-            console.log('got ' + erroredDocIds.length + ' errors');
-            console.log(erroredDocIds)
-            async.map(erroredDocIds, registerConversionError, function (err, result) {
-                console.log('finished registering errors');
+        if (notifications.length) {
+            console.log('got ' + notifications.length + ' webhooks');
+            async.map(notifications, handleWebhook, function (err, result) {
+                console.log('finished handling webhooks');
             });
         }
         res.send(200);
@@ -139,23 +143,35 @@ function startServer() {
 }
 
 function createJob(url) {
-    connection.publish('url.job', { url: url });
+    urlQueue.add({ url: url });
+}
+
+function handleWebhook(hook, callback) {
+    if (hook.type === 'document.error') {
+        console.log('document failed ' + hook.data.id);
+        registerConversionError(hook.data.id, callback);
+        ee.emit('webhook-' + hook.data.id, 'conversion error');
+    } else if (hook.type === 'document.done') {
+        console.log('document is finished ' + hook.data.id);
+        ee.emit('webhook-' + hook.data.id);
+        callback();
+    }
 }
 
 function registerConversionError(id, callback) {
-    docDB.get(id, function (err, doc) {
+    get('doc-' + id, function (err, doc) {
         if (err) {
             console.log('could not find a doc with id ' + id);
             callback();
         } else {
-            db.get(doc.url, function (err, val) {
+            get(doc.url, function (err, val) {
                 if (err) {
                     val = { error: ERR_CONVERSION, doc: id };
                 } else {
                     val.error = ERR_CONVERSION;
                     delete val.session;
                 }
-                db.put(doc.url, val, function (err) {
+                set(doc.url, val, function (err) {
                     if (err) {
                         console.log('error updating doc...', val);
                     }
@@ -171,12 +187,7 @@ function handleError(err, url) {
     var metadata = {
         error: err
     };
-    db.put(url, metadata, function (err) {
-        if (err) {
-            console.log(err);
-            return;
-        }
-    });
+    set(url, metadata);
 }
 
 function createSession(url, doc, done) {
@@ -200,12 +211,12 @@ function createSession(url, doc, done) {
         };
 
         // we got a doc! let's update the db...
-        db.put(url, metadata, function (err) {
+        set(url, metadata, function (err) {
             if (err) {
                 done(err);
                 return;
             }
-            done();
+            done(null, metadata);
         });
     });
 }
@@ -215,8 +226,9 @@ function uploadDoc(url, done) {
     view.documents.uploadURL(url, defaultUploadParams, function (err, response) {
         console.log('finished uploading: ' + url);
         if (err) {
-            var retryAfter = response.headers['retry-after'];
-            if (response.statusCode === 429) {
+            response = err.response;
+            if (response && response.statusCode === 429) {
+                var retryAfter = response.headers['retry-after'];
                 console.log('got throttled... retrying in ' + retryAfter + 's');
                 setTimeout(function () {
                     uploadDoc(url, done);
@@ -227,7 +239,7 @@ function uploadDoc(url, done) {
             }
             return;
         }
-        docDB.put(response.id, {
+        set('doc-' + response.id, {
             doc: response,
             url: url
         });
@@ -310,11 +322,10 @@ function createDBHandler(url, res) {
         clearTimeout(tid);
         // call this function again
         handler(null, val);
-        ee.off(url, handleResult);
     };
 
     var startTimeout = function () {
-        ee.on(url, handleResult);
+        ee.one(url, handleResult);
         tid = setTimeout(function () {
             // tell them to retry if it's taking too long...
             res.json({
@@ -329,7 +340,7 @@ function createDBHandler(url, res) {
             // url does not yet exist in the db, so let's create it!
             console.log('could not find '+ url + ' in the db, so trying to convert it');
 
-            db.put(url, { pending: true, time: Date.now() }, function (err) {
+            set(url, { pending: true, time: Date.now() }, function (err) {
                 if (err) {
                     console.log(err);
                     return;
