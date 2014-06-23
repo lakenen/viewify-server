@@ -51,7 +51,7 @@ function startServer() {
             });
             return;
         }
-        db.get(url, createDBHandler(url, res));
+        db.get(url, createDBHandler(url, req, res));
     });
 
     server.post('/hooks', function (req, res) {
@@ -111,9 +111,9 @@ function handleSession(sess, url, res) {
     });
 }
 
-function createDBHandler(url, res) {
+function createDBHandler(url, req, res) {
 
-    var tid;
+    var tid, closed = false;
     // we have this url (maybe requested by someone else?), but it's
     // not done (or errored) yet... wait for a change in the db for this url
     var handleStatus = function (val) {
@@ -133,6 +133,14 @@ function createDBHandler(url, res) {
         }, MAX_REQUEST_DURATION);
     };
 
+    req.on('end', function () {
+        closed = true;
+    });
+
+    req.on('close', function () {
+        closed = true;
+    });
+
     var handler = function (err, val) {
         if (err) {
             // url does not yet exist in the db, so let's create it!
@@ -150,6 +158,11 @@ function createDBHandler(url, res) {
             return;
         }
         console.log('already have this url');
+
+        if (closed) {
+            console.log('client disconnected...')
+            return;
+        }
 
         if (val.session) {
             console.log('already have a session', val.session);
