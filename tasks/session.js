@@ -2,8 +2,7 @@ var queue = require('bull'),
     view = require('box-view').createClient(process.env.BOX_VIEW_API_TOKEN),
     db = require('../lib/db');
 
-view.documentsURL = process.env.BOX_VIEW_DOCUMENTS_URL;
-view.sessionsURL = process.env.BOX_VIEW_SESSIONS_URL;
+view.sessionsURL = process.env.BOX_VIEW_SESSIONS_URL || view.sessionsURL;
 
 var sessionQueue = queue('sessions', 6379, '127.0.0.1');
 sessionQueue.process(processJob);
