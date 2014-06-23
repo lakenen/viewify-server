@@ -26,7 +26,7 @@ function processJob(job, done) {
         time: Date.now()
     });
     view.documents.uploadURL(url, defaultUploadParams, function (err, response) {
-        var dbkey, id;
+        var dbkey, id, tid;
         console.log('finished uploading: ' + url, response);
         if (err) {
             console.log('there was an error...');
@@ -53,9 +53,10 @@ function processJob(job, done) {
             url: url
         });
         console.log('waiting for a webhook...');
-        db.sub('webhook', function handleWebhook(message) {
+        function handleWebhook(message) {
             console.log('got a webhook for  ' + message.doc + ':' + message.type);
             if (message.doc === id) {
+                clearTimeout(tid);
                 // create session job
                 switch (message.type) {
                     case 'document.viewable':
@@ -84,6 +85,18 @@ function processJob(job, done) {
                         break;
                 }
             }
-        });
+        }
+        db.sub('webhook', handleWebhook);
+        tid = setTimeout(function () {
+            // I guess they decided not to send us a webhook :(
+            handleWebhook({
+                doc: id,
+                type: 'document.viewable'
+            });
+            handleWebhook({
+                doc: id,
+                type: 'document.done'
+            });
+        }, 10000);
     });
 }
