@@ -24,8 +24,8 @@ function startServer() {
     server.use(restify.queryParser());
     server.use(restify.bodyParser());
     server.use(restify.throttle({
-      burst: 20,
-      rate: 10,
+      burst: 2,
+      rate: 1,
       ip: true,
       overrides: {
         '127.0.0.1': {
