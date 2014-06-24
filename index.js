@@ -3,16 +3,24 @@
 var restify = require('restify'),
     hh = require('http-https'),
     URL = require('url'),
-    queue = require('bull'),
+    BoxView = require('box-view-queue'),
     db = require('./lib/db');
 
 var MAX_REQUEST_DURATION = 100000; // ms
-var TEN_MINUTES = 600000; // ms
+var TWO_MINUTES = 120000; // ms
 
-var uploadQueue = queue('uploads', 6379, '127.0.0.1');
-uploadQueue.empty().then(function () {
-    console.log('emptied the queue');
+var view = BoxView.createClient({
+    token: process.env.BOX_VIEW_API_TOKEN,
+    queue: 'redis'
 });
+
+var defaultUploadParams = {
+    'non_svg': false // because fuck IE 8
+};
+var defaultSessionParams = {
+    'is_downloadable': true, // it was already downloadable, so why not?
+    duration: 525900000 // 1k years
+};
 
 function startServer() {
     var server = restify.createServer({
@@ -58,28 +66,11 @@ function startServer() {
 
     server.post('/hooks', function (req, res) {
         console.log('got a webhook notification...');
-        var notifications = req.body;
-        if (notifications.length) {
-            console.log('got ' + notifications.length + ' webhooks');
-            notifications.forEach(function (n) {
-                console.log('publishing webhook for ', n.data.id, n.type);
-                db.pub('webhook', {
-                    type: n.type,
-                    doc: n.data.id
-                });
-            });
-        }
+        view.webhooks(req.body);
         res.send(200);
     });
 
     return server;
-}
-
-function createJob(url) {
-    uploadQueue.add({ url: url });
-    uploadQueue.count().then(function (n) {
-        console.log('created job... queue length: ' + n);
-    });
 }
 
 function verifySession(assetURL, callback) {
@@ -94,22 +85,9 @@ function verifySession(assetURL, callback) {
     req.end();
 }
 
-function handleSession(sess, url, res) {
-    console.log('got a session ' +sess.id +', make sure it works...');
-    verifySession(sess.urls.assets, function (valid) {
-        if (valid) {
-            console.log('session is valid... go get it!');
-            res.json({
-                session: sess.urls.view
-            });
-        } else {
-            // session is bad... delete it from the db, and tell the client to retry?
-            console.log('bad session... retry?');
-            db.del(url);
-            res.json({
-                retry: 1
-            });
-        }
+function sendRetry(res) {
+    res.json({
+        retry: 1
     });
 }
 
@@ -119,9 +97,13 @@ function createDBHandler(url, req, res) {
     // we have this url (maybe requested by someone else?), but it's
     // not done (or errored) yet... wait for a change in the db for this url
     var handleStatus = function (val) {
-        clearTimeout(tid);
+        stopTimeout();
         // call this function again
         handler(null, val);
+    };
+
+    var stopTimeout = function () {
+        clearTimeout(tid);
         db.unsub(url, handleStatus);
     };
 
@@ -129,9 +111,7 @@ function createDBHandler(url, req, res) {
         db.sub(url, handleStatus);
         tid = setTimeout(function () {
             // tell them to retry if it's taking too long...
-            handleStatus({
-                retry: 1
-            });
+            sendRetry(res);
         }, MAX_REQUEST_DURATION);
     };
 
@@ -148,30 +128,65 @@ function createDBHandler(url, req, res) {
             // url does not yet exist in the db, so let's create it!
             console.log(url + ' not found; trying to convert it');
 
-            // db.set(url, { pending: true, time: Date.now() }, function (err) {
-            //     if (err) {
-            //         console.log(err);
-            //         return;
-            //     }
-            // });
+            db.set(url, { pending: true, time: Date.now() });
 
+            var session = view.viewURL(url, defaultUploadParams, defaultSessionParams);
+            session.on('error', function (err) {
+                console.error(err);
+                db.set(url, err);
+                stopTimeout();
+            });
+            session.on('document.done', function (doc) {
+                // yay document is successful
+                console.log('document finished converting:' + doc.id);
+                db.get(url, function (err, val) {
+                    if (err) {
+                        db.set(url, doc);
+                    } else {
+                        if (!val.session) {
+                            var session = view.createSession(doc.id, defaultSessionParams);
+                            session.on('done', function (sess) {
+                                db.set(url, {
+                                    url: url,
+                                    doc: doc,
+                                    session: sess
+                                });
+                            });
+                        }
+                    }
+                });
+            });
+            session.on('done', function (sess) {
+                console.log('SESSION ACQUIRED', sess);
+                if (!closed) {
+                    res.json({
+                        session: sess.session.urls.view
+                    });
+                    stopTimeout();
+                }
+                db.set(url, sess);
+            });
             startTimeout();
-            createJob(url);
             return;
         }
         console.log('already have this url');
 
         if (closed) {
-            console.log('client disconnected...')
+            console.log('client disconnected...');
             return;
         }
 
+        console.log(val);
+
         if (val.session) {
             console.log('already have a session', val.session);
-            handleSession(val.session, url, res);
+
+            res.json({
+                session: val.session.urls.view
+            });
         } else if (val.pending) {
             console.log('this url is still converting');
-            if (Date.now() - (val.time || 0) > TEN_MINUTES) {
+            if (Date.now() - (val.time || 0) > TWO_MINUTES) {
                 console.log('giving up on this one...');
                 res.json(400, {
                     error: 'the document failed to convert in a reasonable amount of time'
