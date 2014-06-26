@@ -73,17 +73,17 @@ function startServer() {
     return server;
 }
 
-function verifySession(assetURL, callback) {
-    console.log('testing ' + assetURL + 'info.json');
-    var req = hh.get(assetURL + 'info.json', function (r) {
-        if (r.statusCode === 200) {
-            callback(true);
-        } else {
-            callback(false);
-        }
-    });
-    req.end();
-}
+// function verifySession(assetURL, callback) {
+//     console.log('testing ' + assetURL + 'info.json');
+//     var req = hh.get(assetURL + 'info.json', function (r) {
+//         if (r.statusCode === 200) {
+//             callback(true);
+//         } else {
+//             callback(false);
+//         }
+//     });
+//     req.end();
+// }
 
 function sendRetry(res) {
     send(res, {
@@ -100,6 +100,52 @@ function send(res, data, code) {
     } catch (err) {
         console.error(err);
     }
+}
+
+function sendSession(res, session) {
+    send(res, {
+        session: session.urls.view
+    });
+}
+
+function getSession(url, res) {
+
+    var sessionSent = false;
+    var sessionRequest = view.viewURL(url, defaultUploadParams, defaultSessionParams);
+
+    function handleSession(session, doc) {
+        console.log('SESSION ACQUIRED', session);
+        db.set(url, {
+            url: url,
+            doc: doc,
+            session: session
+        });
+        sessionSent = true;
+    }
+
+    sessionRequest.on('error', function (err) {
+        console.error('ERROR', err);
+        db.set(url, { error: err });
+        sessionRequest.off();
+    });
+    sessionRequest.on('done', function (session, doc) {
+        if (!sessionSent) {
+            handleSession(session, doc);
+        }
+    });
+    sessionRequest.on('document.done', function (doc) {
+        // yay document is successful
+        console.log('document finished converting:' + doc.id);
+        sessionRequest.off();
+
+        if (!sessionSent) {
+            console.log('requesting session because we haven\'t gotten one yet');
+            var session = view.createSession(doc.id, defaultSessionParams);
+            session.one('done', function (sess) {
+                handleSession(sess, doc);
+            });
+        }
+    });
 }
 
 function createDBHandler(url, req, res) {
@@ -140,50 +186,7 @@ function createDBHandler(url, req, res) {
             console.log(url + ' not found; trying to convert it');
 
             db.set(url, { pending: true, time: Date.now() });
-
-            var sessionRequest = view.viewURL(url, defaultUploadParams, defaultSessionParams);
-            sessionRequest.on('error', function (err) {
-                console.error('ERROR',err);
-                db.set(url, { error: err });
-            });
-            var doc;
-            sessionRequest.on('document.viewable', function (d) {
-                doc = d;
-            });
-            sessionRequest.on('document.done', function (doc) {
-                // yay document is successful
-                console.log('document finished converting:' + doc.id);
-                db.get(url, function (err, val) {
-                    if (err) {
-                        db.set(url, { error: doc });
-                    } else {
-                        if (!val.session) {
-                            var session = view.createSession(doc.id, defaultSessionParams);
-                            session.on('done', function (sess) {
-                                db.set(url, {
-                                    url: url,
-                                    doc: doc,
-                                    session: sess
-                                });
-                            });
-                        }
-                    }
-                });
-            });
-            sessionRequest.on('done', function (sess) {
-                console.log('SESSION ACQUIRED', sess);
-                if (!closed) {
-                    send(res, {
-                        session: sess.urls.view
-                    });
-                    stopTimeout();
-                }
-                db.set(url, {
-                    url: url,
-                    doc: doc,
-                    session: sess
-                });
-            });
+            getSession(url, res);
             startTimeout();
             return;
         }
@@ -195,20 +198,20 @@ function createDBHandler(url, req, res) {
         }
 
         console.log(val);
+        if (typeof val === 'string') {
+            console.log('WTF WHY IS THIS A STRING');
+            val = JSON.parse(val);
+        }
 
         if (val.session) {
-            console.log('already have a session', val.session);
-
-            send(res, {
-                session: val.session.urls.view
-            });
+            console.log('we have a sesion', val.session);
+            sendSession(res, val.session);
         } else if (val.pending) {
-            console.log('this url is still converting');
+            console.log('this doc is still converting');
             if (Date.now() - (val.time || 0) > TWO_MINUTES) {
-                console.log('giving up on this one...');
-                send(res, {
-                    error: 'the document failed to convert in a reasonable amount of time'
-                }, 400);
+                console.log('giving up on this one... retry?');
+                db.del(url);
+                sendRetry(res);
                 return;
             } else {
                 startTimeout();
