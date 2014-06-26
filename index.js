@@ -141,18 +141,18 @@ function createDBHandler(url, req, res) {
 
             db.set(url, { pending: true, time: Date.now() });
 
-            var session = view.viewURL(url, defaultUploadParams, defaultSessionParams);
-            session.on('error', function (err) {
+            var sessionRequest = view.viewURL(url, defaultUploadParams, defaultSessionParams);
+            sessionRequest.on('error', function (err) {
                 console.error(err);
-                db.set(url, err);
+                db.set(url, { error: err });
                 stopTimeout();
             });
-            session.on('document.done', function (doc) {
+            sessionRequest.on('document.done', function (doc) {
                 // yay document is successful
                 console.log('document finished converting:' + doc.id);
                 db.get(url, function (err, val) {
                     if (err) {
-                        db.set(url, doc);
+                        db.set(url, { error: doc });
                     } else {
                         if (!val.session) {
                             var session = view.createSession(doc.id, defaultSessionParams);
@@ -167,7 +167,7 @@ function createDBHandler(url, req, res) {
                     }
                 });
             });
-            session.on('done', function (sess) {
+            sessionRequest.on('done', function (sess) {
                 console.log('SESSION ACQUIRED', sess);
                 if (!closed) {
                     send(res, {
