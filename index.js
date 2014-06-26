@@ -143,9 +143,12 @@ function createDBHandler(url, req, res) {
 
             var sessionRequest = view.viewURL(url, defaultUploadParams, defaultSessionParams);
             sessionRequest.on('error', function (err) {
-                console.error(err);
+                console.error('ERROR',err);
                 db.set(url, { error: err });
-                stopTimeout();
+            });
+            var doc;
+            sessionRequest.on('document.viewable', function (d) {
+                doc = d;
             });
             sessionRequest.on('document.done', function (doc) {
                 // yay document is successful
@@ -171,11 +174,15 @@ function createDBHandler(url, req, res) {
                 console.log('SESSION ACQUIRED', sess);
                 if (!closed) {
                     send(res, {
-                        session: sess.session.urls.view
+                        session: sess.urls.view
                     });
                     stopTimeout();
                 }
-                db.set(url, sess);
+                db.set(url, {
+                    url: url,
+                    doc: doc,
+                    session: sess
+                });
             });
             startTimeout();
             return;
