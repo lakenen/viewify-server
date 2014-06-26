@@ -86,9 +86,20 @@ function verifySession(assetURL, callback) {
 }
 
 function sendRetry(res) {
-    res.json({
+    send(res, {
         retry: 1
     });
+}
+
+function send(res, data, code) {
+    try {
+        if (!code) {
+            code = 200;
+        }
+        res.json(code, data);
+    } catch (err) {
+        console.error(err);
+    }
 }
 
 function createDBHandler(url, req, res) {
@@ -159,7 +170,7 @@ function createDBHandler(url, req, res) {
             session.on('done', function (sess) {
                 console.log('SESSION ACQUIRED', sess);
                 if (!closed) {
-                    res.json({
+                    send(res, {
                         session: sess.session.urls.view
                     });
                     stopTimeout();
@@ -181,25 +192,25 @@ function createDBHandler(url, req, res) {
         if (val.session) {
             console.log('already have a session', val.session);
 
-            res.json({
+            send(res, {
                 session: val.session.urls.view
             });
         } else if (val.pending) {
             console.log('this url is still converting');
             if (Date.now() - (val.time || 0) > TWO_MINUTES) {
                 console.log('giving up on this one...');
-                res.json(400, {
+                send(res, {
                     error: 'the document failed to convert in a reasonable amount of time'
-                });
+                }, 400);
                 return;
             } else {
                 startTimeout();
             }
         } else {
             console.log('this url had an error', val.error);
-            res.json(400, {
+            send(res, {
                 error: val.error || 'unknown error...'
-            });
+            }, 400);
         }
     };
     return handler;
