@@ -62,7 +62,7 @@ function startServer() {
 
     server.post(API_PREFIX + '/docs', function (req, res) {
         var url = req.body.url;
-        console.log('got url:' + url);
+        // console.log('got url:' + url);
         if (!isValidURL(url)) {
             res.json(400, {
                 error: 'bad url'
@@ -80,7 +80,7 @@ function startServer() {
     });
 
     server.post(API_PREFIX + '/hooks', function (req, res) {
-        console.log('got a webhook notification...');
+        // console.log('got a webhook notification...');
         viewify.registerWebhooks(req.body);
         res.send(200);
     });
