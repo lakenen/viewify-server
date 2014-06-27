@@ -62,7 +62,8 @@ function startServer() {
         }
         viewify.viewifyURL(url, function (err, response) {
             if (err) {
-                send(res, err, 400);
+                console.error(err);
+                send(res, { error: 'conversion error' }, 400);
             } else {
                 send(res, response);
             }
