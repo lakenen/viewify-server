@@ -87,7 +87,6 @@ function startServer() {
 
     server.post(API_PREFIX + '/auth', function (req, res) {
         var submittedEmail = req.body.email;
-        console.log(req.body);
         if (!email.valid(submittedEmail)) {
             res.json(422, {error: 'invalid email'});
         } else {
