@@ -2,8 +2,15 @@
 
 var restify = require('restify'),
     URL = require('url'),
+    DB = require('./lib/db.js'),
+    email = require('email-validation'),
     viewify = require('./lib/viewify.js');
 
+var db = DB(process.env.REDIS_HOST, process.env.REDIS_PORT);
+
+function randomInt (low, high) {
+    return Math.floor(Math.random() * (high - low) + low);
+}
 
 function send(res, data, code) {
     try {
@@ -76,7 +83,24 @@ function startServer() {
         res.send(200);
     });
 
-    return server;
+    server.post('/auth', function (req, res) {
+        var submittedEmail = req.body.email;
+        console.log(req.body);
+        if (!email.valid(submittedEmail)) {
+            res.json(422, {error: 'invalid email'});
+        } else {
+            var randomKey, existingKey;
+            while (true) {
+                randomKey = randomInt(10000000,99999999);
+                existingKey = db.get('User:' + randomKey);
+                if (!existingKey) {
+                    break;
+                }
+            }
+            db.set('User:' + randomKey, submittedEmail);
+            res.json({id: randomKey});
+        }
+    });
 }
 
 startServer();

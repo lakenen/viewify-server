@@ -24,12 +24,13 @@
   "homepage": "https://github.com/lakenen/viewify-server",
   "devDependencies": {
     "box-view": "^0.1.6",
-    "eemitter": "^0.2.0",
-    "http-https": "^1.0.0",
-    "restify": "^2.8.1",
-    "redis": "^0.10.3",
-    "hiredis": "^0.1.17",
+    "box-view-queue": "0.0.3",
     "bull": "^0.1.6",
-    "box-view-queue": "0.0.3"
+    "eemitter": "^0.2.0",
+    "email-validation": "^0.1.1",
+    "hiredis": "^0.1.17",
+    "http-https": "^1.0.0",
+    "redis": "^0.10.3",
+    "restify": "^2.8.1"
   }
 }
