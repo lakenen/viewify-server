@@ -4,14 +4,18 @@ var restify = require('restify'),
     hh = require('http-https'),
     URL = require('url'),
     BoxView = require('box-view-queue'),
-    db = require('./lib/db');
+    db = require('./lib/db')(process.env.REDIS_HOST, process.env.REDIS_PORT);
 
 var MAX_REQUEST_DURATION = 100000; // ms
 var TWO_MINUTES = 120000; // ms
 
 var view = BoxView.createClient({
     token: process.env.BOX_VIEW_API_TOKEN,
-    queue: 'redis'
+    queue: 'redis',
+    queueOptions: {
+        host: process.env.REDIS_HOST,
+        port: process.env.REDIS_PORT
+    }
 });
 
 var defaultUploadParams = {
