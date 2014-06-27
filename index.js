@@ -6,6 +6,8 @@ var restify = require('restify'),
     email = require('email-validation'),
     viewify = require('./lib/viewify.js');
 
+var API_PREFIX = '/api/1/';
+
 var db = DB(process.env.REDIS_HOST, process.env.REDIS_PORT);
 
 function randomInt (low, high) {
@@ -51,14 +53,14 @@ function startServer() {
       }
     }));
 
-    server.get('/', function (req, res) {
+    server.get(API_PREFIX, function (req, res) {
         //createJob(req.params.url);
         res.json({
             hello: 'world'
         });
     });
 
-    server.post('/docs', function (req, res) {
+    server.post(API_PREFIX + '/docs', function (req, res) {
         var url = req.body.url;
         console.log('got url:' + url);
         if (!isValidURL(url)) {
@@ -77,13 +79,13 @@ function startServer() {
         });
     });
 
-    server.post('/hooks', function (req, res) {
+    server.post(API_PREFIX + '/hooks', function (req, res) {
         console.log('got a webhook notification...');
         viewify.registerWebhooks(req.body);
         res.send(200);
     });
 
-    server.post('/auth', function (req, res) {
+    server.post(API_PREFIX + '/auth', function (req, res) {
         var submittedEmail = req.body.email;
         console.log(req.body);
         if (!email.valid(submittedEmail)) {
