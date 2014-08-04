@@ -32,5 +32,8 @@
     "http-https": "^1.0.0",
     "redis": "^0.10.3",
     "restify": "^2.8.1"
+  },
+  "dependencies": {
+    "box-view-queue": "0.0.4"
   }
 }
