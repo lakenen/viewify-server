@@ -24,7 +24,6 @@
   "homepage": "https://github.com/lakenen/viewify-server",
   "devDependencies": {
     "box-view": "^0.1.6",
-    "box-view-queue": "0.0.3",
     "bull": "^0.1.6",
     "eemitter": "^0.2.0",
     "email-validation": "^0.1.1",
